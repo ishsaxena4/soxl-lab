@@ -132,6 +132,10 @@ Build in this order. Do not skip ahead or pre-build later modules.
   so results are stable across runs.
 - **Git habit:** commit after each working step with clear messages
   (e.g. `scaffold repo`, `add data loader`). Small, frequent commits.
+- **Keep §7 current automatically.** After finishing a module milestone (or a
+  meaningful step within one), update Section 7 — Current status in this same
+  turn, without being asked. It should always state which module is done, which
+  is active, and what the next concrete step is.
 
 ---
 
@@ -150,8 +154,13 @@ Build in this order. Do not skip ahead or pre-build later modules.
 
 ## 7. Current status
 
-Between **Module 0** (complete, conceptual) and **Module 1** (data). Immediate task:
-scaffold the repo, write `src/data.py` to download daily adjusted closes for
-SOXL/SOXS/SOXX since 2015, compute daily returns, and produce a yearly table
-comparing SOXL's actual return to 3× SOXX's return (to measure real decay vs.
-trend-amplification). Keep it to that scope.
+**Module 1** (data) is done: `src/data.py` exposes `get_prices()`, which downloads
+daily adjusted closes for SOXL/SOXS/SOXX since 2015; run as a script it also prints
+the yearly SOXL-vs-3x-SOXX decay table.
+
+Now in **Module 2** (backtest engine). `src/backtest.py` has the core `backtest()`
+function (positions shifted one day forward against asset returns — no look-ahead —
+compounded into an equity curve). Run as a script it validates against the trivial
+case: a buy-and-hold (always fully long) position on SOXL. Next steps for this
+module: try buy-and-hold on other instruments/date ranges, then add realistic costs
+(spread, fees) before building anything clever on top.
