@@ -20,7 +20,12 @@ def backtest(prices, positions, cost_bps=5.0):
     # A position chosen at day t's close only earns day t+1's return,
     # so shift positions forward one day before multiplying.
     # This single line is what prevents look-ahead bias.
-    pos = positions.shift(1)                  # position actually HELD during day t
+    # fillna(0.0): before the backtest window starts there's no known prior
+    # position, so treat it as flat. Without this, pos.diff() on the very
+    # first real day computes (1.0 - NaN) = NaN, which poisons that day's
+    # strat_ret and gets silently dropped -- losing both the first day's
+    # return AND the cost of entering the very first position.
+    pos = positions.shift(1).fillna(0.0)      # position actually HELD during day t
 
     # Turnover: how much the held position changed today. Going 0 -> 1 costs
     # one unit; holding steady costs nothing. This is what makes churn expensive.
@@ -68,6 +73,17 @@ if __name__ == "__main__":
     positions = pd.Series(1.0, index=prices.index)
 
     results = backtest(prices, positions)
+
+    # Validate the engine on the one case with a hand-computable answer:
+    # a static buy-and-hold enters once (day 1) and never trades again, so
+    # equity = (gross day-1 return, net of its one-time entry cost)
+    #          * (the plain, uncosted compounding of every day after that).
+    cost = 5.0 / 10_000.0
+    day1_ret = prices.iloc[1] / prices.iloc[0] - 1
+    expected = (1 + day1_ret - cost) * (prices.iloc[-1] / prices.iloc[1])
+    actual = results["equity"].iloc[-1]
+    assert abs(actual - expected) < 1e-9, f"Engine mismatch: {actual} vs {expected}"
+    print(f"Validation passed: engine reproduces buy-and-hold net of entry cost ({actual:.6f})")
 
     total_return = results["equity"].iloc[-1] - 1
     n_days = len(results)

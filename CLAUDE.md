@@ -154,13 +154,36 @@ Build in this order. Do not skip ahead or pre-build later modules.
 
 ## 7. Current status
 
-**Module 1** (data) is done: `src/data.py` exposes `get_prices()`, which downloads
-daily adjusted closes for SOXL/SOXS/SOXX since 2015; run as a script it also prints
-the yearly SOXL-vs-3x-SOXX decay table.
+**Module 1** (data) is done: `src/data.py` exposes `get_prices()`, which loads
+daily adjusted closes for SOXL/SOXS/SOXX. The data window is now **pinned and
+cached**: `FROZEN_END = "2026-07-15"` (yfinance's `end` is exclusive, so this
+covers every close through 2026-07-14) and results are cached to
+`data/prices.csv` so metrics stay stable across a multi-day work session instead
+of shifting every time a new live trading day appends to the feed. Call
+`get_prices(force_refresh=True)` and update `FROZEN_END` to deliberately roll
+the window forward. Run as a script it also prints the yearly SOXL-vs-3x-SOXX
+decay table.
 
-Now in **Module 2** (backtest engine). `src/backtest.py` has the core `backtest()`
-function (positions shifted one day forward against asset returns — no look-ahead —
-compounded into an equity curve). Run as a script it validates against the trivial
-case: a buy-and-hold (always fully long) position on SOXL. Next steps for this
-module: try buy-and-hold on other instruments/date ranges, then add realistic costs
-(spread, fees) before building anything clever on top.
+Now in **Module 2** (backtest engine). `src/backtest.py` has `backtest()`
+(positions shifted one day forward against asset returns — no look-ahead —
+with a 5 bps one-way cost model on turnover, compounded into an equity curve)
+and `metrics()` (CAGR, annualized vol, Sharpe, max drawdown, trade count). Its
+`__main__` validates against the trivial case — buy-and-hold on SOXL — with a
+closed-form assertion.
+
+Fixed a real bug found while adding that assertion: `positions.shift(1)` left a
+`NaN` before the first trading day, so `pos.diff()` computed `1.0 - NaN = NaN`
+on the day a position is first entered, which poisoned that day's `strat_ret`
+and got silently dropped by `.dropna()` — losing the first day's return *and*
+never charging the entry cost. Fixed with `positions.shift(1).fillna(0.0)`
+(assume flat before the backtest window starts).
+
+**Frozen benchmark** (buy-and-hold SOXL, 2015-01-02 → 2026-07-14, 5 bps cost,
+2897 days, 1 trade): CAGR 47.62%, annualized vol 97.86%, Sharpe 0.893, max
+drawdown -90.46%, final equity $88.00 per $1 invested. These numbers are not a
+prediction — leveraged-ETF returns are extremely path-dependent and this window
+includes several multi-year regimes; the point is a stable, reproducible
+reference point for comparing future strategies against buy-and-hold.
+
+Next steps for this module: try buy-and-hold on other instruments/date ranges,
+then build a first non-trivial regime-flat strategy on top.
