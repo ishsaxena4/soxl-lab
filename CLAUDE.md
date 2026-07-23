@@ -130,6 +130,8 @@ Build in this order. Do not skip ahead or pre-build later modules.
   decay. A backtest without costs is a lie; say so if asked to omit them.
 - **Reproducibility.** Set random seeds where relevant. Cache data pulls to `data/`
   so results are stable across runs.
+- **Trade count is meaningless for continuous-position strategies** — measure
+  total turnover instead.
 - **Git habit:** commit after each working step with clear messages
   (e.g. `scaffold repo`, `add data loader`). Small, frequent commits.
 - **Keep §7 current automatically.** After finishing a module milestone (or a
@@ -164,7 +166,7 @@ of shifting every time a new live trading day appends to the feed. Call
 the window forward. Run as a script it also prints the yearly SOXL-vs-3x-SOXX
 decay table.
 
-Now in **Module 2** (backtest engine). `src/backtest.py` has `backtest()`
+**Module 2** (backtest engine) is done. `src/backtest.py` has `backtest()`
 (positions shifted one day forward against asset returns — no look-ahead —
 with a 5 bps one-way cost model on turnover, compounded into an equity curve)
 and `metrics()` (CAGR, annualized vol, Sharpe, max drawdown, trade count). Its
@@ -178,12 +180,38 @@ and got silently dropped by `.dropna()` — losing the first day's return *and*
 never charging the entry cost. Fixed with `positions.shift(1).fillna(0.0)`
 (assume flat before the backtest window starts).
 
-**Frozen benchmark** (buy-and-hold SOXL, 2015-01-02 → 2026-07-14, 5 bps cost,
-2897 days, 1 trade): CAGR 47.62%, annualized vol 97.86%, Sharpe 0.893, max
-drawdown -90.46%, final equity $88.00 per $1 invested. These numbers are not a
-prediction — leveraged-ETF returns are extremely path-dependent and this window
-includes several multi-year regimes; the point is a stable, reproducible
-reference point for comparing future strategies against buy-and-hold.
+On top of the engine, `src/strategy.py` implements four regime strategies —
+`vol_filter_positions` (binary, flat above a vol threshold),
+`momentum_filter_positions` (binary, flat on negative trailing return),
+`combined_filter_positions` (AND of the two), and `vol_scaled_positions`
+(continuous sizing, `k / realized_vol` clipped to `[0, 1]`) — and its `__main__`
+prints a side-by-side comparison table against buy-and-hold, including total
+turnover and cost drag per strategy.
 
-Next steps for this module: try buy-and-hold on other instruments/date ranges,
-then build a first non-trivial regime-flat strategy on top.
+### Results so far
+
+Frozen benchmark, SOXL, 2015-01-02 → 2026-07-14, 5 bps one-way cost, 2897 days:
+
+| Strategy    | CAGR    | Vol     | Sharpe | MaxDD    |
+|-------------|---------|---------|--------|----------|
+| Buy & hold  | 47.62%  | 97.86%  | 0.893  | -90.46%  |
+| Vol filter  | 8.58%   | 30.45%  | 0.424  | -60.04%  |
+| Momentum    | 23.49%  | 69.59%  | 0.655  | -87.17%  |
+| Combined    | 5.18%   | 26.04%  | 0.325  | -46.80%  |
+| Vol scaled  | 45.34%  | 61.88%  | 0.917  | -69.26%  |
+
+**Vol scaled is the current incumbent**: Sharpe 0.917 / MaxDD -69.26% / CAGR
+45.34%, beating buy-and-hold's Sharpe of 0.893 while cutting max drawdown by
+~21 points. Measured cost drag is 2.68% total (~0.23%/yr) despite 2216
+nominal "trades" — turnover (sum of daily `|Δposition|`), not trade count, is
+the honest cost measure for a continuous-sizing strategy, and at that level
+turnover is not a binding constraint on this strategy.
+
+**Important caveat:** these are **in-sample results on a single instrument**
+(SOXL only, one fixed window, no train/test split) and have **not** been
+validated out-of-sample. Do not treat "vol scaled wins" as a conclusion yet —
+it's a candidate to carry into Module 3, not a validated result.
+
+Next: **Module 3** (features & regime detection) — build volatility-state /
+regime features properly, and set up walk-forward out-of-sample testing so
+strategy comparisons like the table above stop being in-sample artifacts.
