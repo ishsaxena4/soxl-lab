@@ -166,52 +166,134 @@ of shifting every time a new live trading day appends to the feed. Call
 the window forward. Run as a script it also prints the yearly SOXL-vs-3x-SOXX
 decay table.
 
-**Module 2** (backtest engine) is done. `src/backtest.py` has `backtest()`
-(positions shifted one day forward against asset returns — no look-ahead —
-with a 5 bps one-way cost model on turnover, compounded into an equity curve)
-and `metrics()` (CAGR, annualized vol, Sharpe, max drawdown, trade count). Its
-`__main__` validates against the trivial case — buy-and-hold on SOXL — with a
-closed-form assertion.
+**Module 2** (backtest engine) is **complete**, including out-of-sample
+validation. `src/backtest.py` has `backtest()` (positions shifted one day
+forward against asset returns — no look-ahead — with a 5 bps one-way cost
+model on turnover, compounded into an equity curve) and `metrics()` (CAGR,
+annualized vol, Sharpe, max drawdown, trade count). `src/strategy.py`
+implements four regime strategies — `vol_filter_positions`,
+`momentum_filter_positions`, `combined_filter_positions`, and
+`vol_scaled_positions` (continuous sizing, `k / realized_vol` clipped to
+`[0, 1]`).
 
-Fixed a real bug found while adding that assertion: `positions.shift(1)` left a
-`NaN` before the first trading day, so `pos.diff()` computed `1.0 - NaN = NaN`
-on the day a position is first entered, which poisoned that day's `strat_ret`
-and got silently dropped by `.dropna()` — losing the first day's return *and*
-never charging the entry cost. Fixed with `positions.shift(1).fillna(0.0)`
-(assume flat before the backtest window starts).
+**Incumbent strategy:** `vol_scaled_positions` — 20-day realized-vol window,
+`k = 0.60`. Full-sample (SOXL, 2015-01-02 → 2026-07-14): Sharpe 0.917 vs.
+buy-and-hold's 0.893, MaxDD −69% vs. −90%, cost drag ~0.23%/yr (negligible —
+turnover, not trade count, is the honest cost measure for a continuous-sizing
+strategy).
 
-On top of the engine, `src/strategy.py` implements four regime strategies —
-`vol_filter_positions` (binary, flat above a vol threshold),
-`momentum_filter_positions` (binary, flat on negative trailing return),
-`combined_filter_positions` (AND of the two), and `vol_scaled_positions`
-(continuous sizing, `k / realized_vol` clipped to `[0, 1]`) — and its `__main__`
-prints a side-by-side comparison table against buy-and-hold, including total
-turnover and cost drag per strategy.
+**Validated out-of-sample two ways:**
 
-### Results so far
+1. **SOXL train/test split** (`src/split_test.py`). Train 2015–2021:
+   buy-and-hold edges vol-scaled on Sharpe (1.018 vs. 0.992). Test 2022–2026:
+   vol-scaled wins (0.800 vs. 0.760). Drawdown protection held in *both*
+   halves — the edge isn't a single lucky window.
+2. **Synthetic 3x-QQQ, 1999–2026** (`src/qqq_test.py`), simulated via
+   multiplicative daily-reset compounding on QQQ's own return history, with
+   `k` re-anchored to QQQ's own average vol (not SOXL's). Vol-scaled cut
+   volatility roughly in half and reduced drawdown across all four crises
+   (dot-com, GFC, COVID, 2022); Sharpe improved in three of four.
 
-Frozen benchmark, SOXL, 2015-01-02 → 2026-07-14, 5 bps one-way cost, 2897 days:
+**Honest characterization:** this is **crash insurance, not broad alpha**. It
+pays a premium in calm bull markets and collects in crises. Its blind spot is
+a sudden, un-signalled V-crash (2020, COVID) — a trailing-vol signal can't
+react to a discontinuity, so it protects capital there (drawdown −35% vs.
+−70%) but loses on Sharpe. **This blind spot is a fundamental cost of using
+realized (lagging) information, not a bug to patch.**
 
-| Strategy    | CAGR    | Vol     | Sharpe | MaxDD    |
-|-------------|---------|---------|--------|----------|
-| Buy & hold  | 47.62%  | 97.86%  | 0.893  | -90.46%  |
-| Vol filter  | 8.58%   | 30.45%  | 0.424  | -60.04%  |
-| Momentum    | 23.49%  | 69.59%  | 0.655  | -87.17%  |
-| Combined    | 5.18%   | 26.04%  | 0.325  | -46.80%  |
-| Vol scaled  | 45.34%  | 61.88%  | 0.917  | -69.26%  |
+**Key methodological lessons banked** (carry these into every future module):
+- Trade count is meaningless for continuous-position strategies — always
+  measure total turnover instead.
+- Returns are multiplicative, so year-by-year edge must be measured in **log**
+  terms, not summed arithmetically.
+- Measure a problem before building machinery to fix it.
+- Verify Claude Code's implementation actually matches the spec — it has
+  previously substituted a moving-average crossover for a rolling-sum
+  calculation, and once corrupted a file via interleaved edits. Read the diff.
 
-**Vol scaled is the current incumbent**: Sharpe 0.917 / MaxDD -69.26% / CAGR
-45.34%, beating buy-and-hold's Sharpe of 0.893 while cutting max drawdown by
-~21 points. Measured cost drag is 2.68% total (~0.23%/yr) despite 2216
-nominal "trades" — turnover (sum of daily `|Δposition|`), not trade count, is
-the honest cost measure for a continuous-sizing strategy, and at that level
-turnover is not a binding constraint on this strategy.
+**Module 3** (features & regime detection) is now active. Plan, in order:
 
-**Important caveat:** these are **in-sample results on a single instrument**
-(SOXL only, one fixed window, no train/test split) and have **not** been
-validated out-of-sample. Do not treat "vol scaled wins" as a conclusion yet —
-it's a candidate to carry into Module 3, not a validated result.
+1. Build a **walk-forward out-of-sample harness first**, so every feature and
+   strategy added from here on is judged on unseen data by construction —
+   Module 2's split test was a one-shot proof of concept, not the final
+   harness. **Phase 1 complete.**
+2. Then add **directional regime features one at a time**, each with a
+   stated mechanism and a named failure mode, validated before the next is
+   added.
+3. All of this sits on top of vol-scaling as the sizing layer underneath —
+   the goal is to add directional edge on top of the crash-insurance base,
+   not replace it.
 
-Next: **Module 3** (features & regime detection) — build volatility-state /
-regime features properly, and set up walk-forward out-of-sample testing so
-strategy comparisons like the table above stop being in-sample artifacts.
+**Phase 1 — `src/walkforward.py` — BUILT, RUN, AND INTERPRETED.** Anchored
+(expanding) walk-forward on SOXL comparing `vol_scaled_positions`
+(`lookback=20`, `k=0.60`) against buy-and-hold, 5 bps one-way costs, all reused
+from `data.py` / `backtest.py` / `strategy.py`. Train windows anchored at
+2015-01 (2018 crash in every train window), 5-year minimum; test blocks 18
+months, non-overlapping (step = test length), yielding **4 complete folds**
+(2020-01 → 2026-01).
+
+*Continuity guard:* positions computed **once on full price history**
+(`vs_positions_full = ...` under the `***** CONTINUITY GUARD *****` banner)
+and **sliced** per fold in `evaluate_block()` — never recomputed inside a
+fold. A cold rolling-window restart would make each fold's first ~20 days
+NaN/underfilled, which `.fillna(0.0)` would silently turn into a fake "flat"
+opening. Slicing a finished backward-looking series is not look-ahead.
+
+**Results** (vol-scaled vs buy-and-hold, out-of-sample):
+
+| Fold | Test span | Regime | VS Sharpe | B&H Sharpe | VS MaxDD | B&H MaxDD | Winner |
+|------|-----------|--------|-----------|------------|----------|-----------|--------|
+| 1 | 2020-01→2021-07 | COVID crash + recovery | 1.163 | 1.061 | −44.3% | −80.4% | **VS** |
+| 2 | 2021-07→2022-12 | 2022 grind-down | −0.104 | −0.302 | −63.8% | −90.5% | **VS** |
+| 3 | 2023-01→2024-07 | bull rip | 1.748 | 1.848 | −40.8% | −49.0% | **B&H** |
+| 4 | 2024-07→2025-12 | choppy/down | 0.316 | 0.414 | −69.3% | −87.9% | **B&H** |
+
+**Verdict: 2/4 on Sharpe, but perfectly regime-sorted.** Vol-scaling wins both
+crash folds, loses both calm/bull folds — not a coin flip, a mechanism. This
+confirms out-of-sample what Module 2 characterized: vol-scaling is a
+**regime-conditional drawdown-control layer, not broad alpha**. The product is
+risk, not return — MaxDD is roughly halved in every fold. The thin
+whole-cycle Sharpe edge (+0.024 full-sample) is decisive crash wins netted
+against a bull-market premium the strategy pays *by design*: sizing down in
+high-vol-up regimes caps upside (Fold 3 gave up ~87 pts of CAGR, 147% vs
+233%). Crash protection and bull-upside forfeit are the same coin — cost
+accepted with eyes open. Vol-scaling is carried forward as Module 3's sizing
+layer.
+
+**Open items carried into Phase 2:**
+- *Train window is still inert.* `vol_scaled_positions` fits nothing —
+  `k=0.60` is a hard-coded constant, not estimated from train data — so the
+  expanding train window is reported but never consumed. The scaffolding is
+  correct and necessary for Phase 2 (fitted features/models); for Phase 1 the
+  "out-of-sample" claim rests only on disjoint test blocks, not on any
+  fit/predict separation. `k` was also chosen with full-sample knowledge.
+- *Fold-boundary entry cost.* `backtest()` starts each slice from a flat book
+  (`positions.shift(1).fillna(0.0)`), so every fold charges a one-off ~5 bps
+  entry on its first traded day, buy-and-hold included. Tiny and symmetric, an
+  artifact of slicing not real trading. Same as `split_test.py`; left as-is.
+- *~6 months unused.* The post-2026-01 tail is shorter than a full 18-month
+  block and dropped, so a noisier stub fold can't get an equal vote.
+
+**Phase 2 — directional regime features (next, not yet started).** Target:
+classify the **sign** of the current volatility regime (high-vol-up vs
+high-vol-down) from present/past evidence only, so sizing can stay big in
+up-turbulence and shrink in down-turbulence — recovering the bull-market
+upside vol-scaling forfeits, without losing crash protection. **Hard
+constraint: reactive, never predictive** — classify the regime currently in
+progress, never forecast the turn. Build one feature at a time, each with a
+stated mechanism and a named failure mode, validated on the walk-forward
+harness before the next is added.
+
+Next concrete step: begin Phase 2 — design the first directional (vol-sign)
+feature, starting by naming the market condition where it misleads before
+building it.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
