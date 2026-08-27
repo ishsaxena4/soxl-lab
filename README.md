@@ -1,4 +1,4 @@
-# SOXL Lab
+# Quantitive Analysis and Strategy on Semi-conductor ETF's
 
 An educational systematic-trading and machine-learning project built around the
 leveraged semiconductor ETFs **SOXL** (3x long) and **SOXS** (3x short).
