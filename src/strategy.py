@@ -60,6 +60,78 @@ def vol_scaled_positions(prices, lookback=20, k=0.60):
     return positions
 
 
+def regime_switch_positions(prices, lookback=20, k=0.60, trend_window=20,
+                            vol_percentile=0.60, vol_lookback=252,
+                            up_mult=1.5, down_floor=0.0):
+    """
+    Three-bucket regime-switch sizing. Every day falls into exactly ONE of
+    three regimes, decided by a RELATIVE vol level and a trend SIGN:
+
+      1. low vol  (v <  threshold)              -> clip(k / v, 0, 1)
+      2. high vol (v >= threshold), trend  > 0  -> clip(up_mult * k / v, 0, 1)
+      3. high vol (v >= threshold), trend <= 0  -> down_floor
+
+    Bucket 1 is byte-for-byte what vol_scaled_positions does. Bucket 2 is the
+    only one that can size ABOVE plain vol-scaling. So the ONLY difference
+    between this strategy and vol_scaled_positions is the bucketing -- any
+    performance difference is attributable to that and nothing else.
+
+    lookback / k mirror vol_scaled_positions exactly. trend_window is the
+    rolling-sum window for the trend sign; vol_percentile / vol_lookback set
+    the trailing "high vol" threshold; up_mult scales bucket 2; down_floor is
+    the flat target in bucket 3.
+    """
+    rets = prices.pct_change()
+
+    # --- Signal 1: realized vol ------------------------------------------
+    # Identical to vol_scaled_positions: same rolling-std window, same
+    # sqrt(252) annualization. Not a new vol measure.
+    realized_vol = rets.rolling(lookback).std() * np.sqrt(252)
+
+    # "High vol" is relative to this asset's OWN recent vol history, not an
+    # absolute number. Threshold at day t = the vol_percentile-th quantile of
+    # the last vol_lookback realized-vol observations.
+    #
+    # LEAK-FREE: pandas' rolling window at row t covers rows
+    # [t - vol_lookback + 1 .. t] -- trailing, closed on the right. It uses
+    # today's vol and older values, never tomorrow's. (A full-sample
+    # realized_vol.quantile(...) WOULD leak the future; that is exactly what
+    # this line avoids.)
+    vol_threshold = realized_vol.rolling(vol_lookback).quantile(vol_percentile)
+
+    # --- Signal 2: trend direction ---------------------------------------
+    # Rolling SUM of daily returns, same shape momentum_filter_positions uses.
+    # Only its SIGN matters here. Not an MA crossover, not price momentum.
+    trend_sum = rets.rolling(trend_window).sum()
+
+    # --- Bucket assignment ------------------------------------------------
+    is_high_vol = realized_vol >= vol_threshold
+    high_up = is_high_vol & (trend_sum > 0)     # strictly positive
+    high_down = is_high_vol & (trend_sum <= 0)  # zero counts as "down"
+
+    # Warm-up: until lookback, trend_window AND vol_lookback are all filled,
+    # any comparison against NaN is False, so is_high_vol is False and those
+    # days fall to bucket 1 -- where the size is itself NaN, which the
+    # caller's .fillna(0.0) turns into "flat". Same convention every other
+    # strategy in this file uses. In practice the first ~252 days behave as
+    # plain vol-scaling, which is honest: you cannot know what "high vol for
+    # this asset" means before you have a vol history to compare against.
+
+    low_vol_size = (k / realized_vol).clip(0.0, 1.0)            # bucket 1
+    high_up_size = (up_mult * k / realized_vol).clip(0.0, 1.0)  # bucket 2
+
+    # Start from bucket 1 everywhere, then overwrite the two high-vol buckets.
+    positions = low_vol_size.copy()
+    positions[high_up] = high_up_size[high_up]
+    positions[high_down] = down_floor
+
+    # TIMING: no .shift() here -- same basis as every other strategy in this
+    # file. Each value is computed from data up to and INCLUDING that day's
+    # close; backtest() applies its own shift(1) so the position only earns
+    # the NEXT day's return.
+    return positions
+
+
 if __name__ == "__main__":
     # Compare buy-and-hold against all four regime strategies on the same
     # asset and window, so their Sharpe/drawdown tradeoffs sit side by side.
